@@ -2,12 +2,66 @@
 
 ## Contents
 
+- This fork: macOS app and HD Loader naming
 - Intro
 - Networking server
 - Compilation
 - Configuration and list file location
 - Configuration
 - New features
+
+## This fork: macOS app and HD Loader naming
+
+This fork adds **PS2 HDD Manager**, a native macOS app for preparing a PS2 internal hard drive
+from a Mac (the job HDL Batch Installer / WinHIIP do on Windows), plus a few `hdl_dump` changes it needs.
+
+![PS2 HDD Manager icon](macos/AppIcon.png)
+
+### What the app does
+
+- Lists **external physical drives only**; the Mac's internal/boot disk is never shown
+- **Formats** a drive for PS2 (APA partition table, optional `+OPL` partition for Open PS2 Loader),
+  after you type the disk name (e.g. `disk4`) to confirm
+- **Installs games** from ISO, CUE/BIN, NRG, GI, IML or ZSO: drag & drop, names cleaned up
+  automatically (`(USA)`, `[SLUS-…]` tags removed), CD/DVD detection, live progress with time left and
+  speed, Stop button, free-space warning
+- **Renames and deletes** games; delete really frees the space (via `pfsshell rmpart`), shows progress,
+  and re-reads the drive to confirm
+- **HD Loader compatible** naming (see below), with a one-click "Make Visible in HD Loader" for
+  games installed with other naming
+- **Duplicate detection by game ID** (e.g. `SLUS_200.62`): discs already on the drive or in the queue
+  are skipped unless you choose *Install Anyway*; multi-disc games have a different ID per disc
+- Asks for the administrator password **once per launch**; disk commands then go through a root shell
+  that only the app can talk to
+
+Games installed with this app show up in **Open PS2 Loader** (tested on a real PS2) and, with HD Loader
+naming, in the original **HD Loader**.
+
+### Build and run
+
+```sh
+brew install meson ninja
+git clone --recursive https://github.com/Andron338/hdl-dump.git
+cd hdl-dump
+./macos/build_app.sh
+open "macos/build/PS2 HDD Manager.app"
+```
+
+`pfsshell` (used for formatting and deleting) is included as a git submodule in `macos/vendor/pfsshell`;
+run `git submodule update --init --recursive` if you cloned without `--recursive`.
+More details, permissions and a disk-image test mode are in [`macos/README.md`](macos/README.md).
+
+### Changes to `hdl_dump`
+
+| Change | Command |
+|---|---|
+| Name partitions `PP.HDL.<name>` so the original HD Loader lists them (OPL and HDD-OSD see them too) | `hdl_dump inject_dvd hdd1: "Name" game.iso -hdl` |
+| Convert an installed game to HD Loader naming; renames of such games keep it | `hdl_dump modify hdd1: "Name" -hdl` |
+| Partition names hold only 24 characters of the name after `PP.HDL.`; colliding names get `~2`, `~3`… | automatic |
+| Machine-readable game list including partition names (tab-separated, `#total` line at the end) | `hdl_dump hdl_toc hdd1: --tsv` |
+| Accept ISO images whose file names lack the `;1` suffix (e.g. made with macOS `hdiutil`) | automatic |
+
+On macOS, pass raw disk paths such as `/dev/rdisk4` as the device (`diskutil list` shows the number).
 
 ## Intro
 
@@ -144,6 +198,19 @@ Now `icon.sys` can be in any of 2 formats: Memory Card format or HDD format.
 `boot.kirx` injection address - `0x301000`
 
 `boot.kirx` size limit - 1,044,480 bytes
+
+### HD Loader naming (`-hdl`)
+
+`inject_cd`, `inject_dvd` and `modify` accept `-hdl`, which names the partition `PP.HDL.<game name>`
+(the scheme the original HD Loader uses) instead of `PP.SLUS-12345..GAME_NAME`.
+With `modify`, it converts an existing game; renaming a `PP.HDL.` game keeps that scheme.
+If the 31-character partition name is already taken, `~2`, `~3`, … is appended.
+
+### Machine-readable list (`hdl_toc --tsv`)
+
+`hdl_toc <device> --tsv` prints one tab-separated line per game:
+`type`, `size (KB)`, `compat flags`, `dma`, `startup`, `partition`, `name`,
+followed by `#total <total MB> <used MB> <free MB>`.
 
 ### Hiding Games
 
