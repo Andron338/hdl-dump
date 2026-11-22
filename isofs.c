@@ -191,7 +191,11 @@ isofs_get_file_addr(iin_t *iin,
             ++p;
             p += 4; /* flags, unit size, intereave gap size, volume seq no */
             name_len = *p++;
-            if ((name_len == file_name_len) && (memcmp(p, file_name, file_name_len) == 0)) { /* found */
+            if (((name_len == file_name_len) && (memcmp(p, file_name, file_name_len) == 0)) ||
+                /* tolerate ISOs mastered without the ";1" version suffix (e.g. macOS hdiutil) */
+                (file_name_len > 2 && name_len == file_name_len - 2 &&
+                 memcmp(file_name + name_len, ";1", 2) == 0 &&
+                 memcmp(p, file_name, name_len) == 0)) { /* found */
                 found = 1;
                 break;
             } else

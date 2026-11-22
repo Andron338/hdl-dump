@@ -67,6 +67,7 @@
 #endif
 
 #define CSVPRINT            (1 << 1)
+#define TSVPRINT            (1 << 2) /* machine-readable, used by the macOS GUI */
 #define CDVD_INFO_NEW_STYLE (1 << 2)
 
 /* command names */
@@ -408,9 +409,10 @@ show_hdl_toc(const dict_t *config,
         result = hdl_glist_read(hio, &glist);
         if (result == RET_OK && glist != NULL) {
             u_int32_t i, j;
-            printf("%-4s%9s %-*s %-3s %-12s %s\n",
-                   "type", "size", MAX_FLAGS * 2 - 1, "flags", "dma",
-                   "startup", "name");
+            if (!(flags & TSVPRINT))
+                printf("%-4s%9s %-*s %-3s %-12s %s\n",
+                       "type", "size", MAX_FLAGS * 2 - 1, "flags", "dma",
+                       "startup", "name");
             for (i = 0; i < glist->count; ++i) {
                 const hdl_game_info_t *game = glist->games + i;
                 char compat_flags[MAX_FLAGS * 2 + 1];
@@ -453,6 +455,14 @@ show_hdl_toc(const dict_t *config,
                     }
                 }
 
+                if (flags & TSVPRINT) {
+                    printf("%s\t%lu\t%u\t%s\t%s\t%s\t%s\n",
+                           game->is_dvd != 0 ? "DVD" : "CD",
+                           (unsigned long)game->raw_size_in_kb,
+                           (unsigned int)game->compat_flags,
+                           dma, game->startup, game->partition_name, game->name);
+                    continue;
+                }
                 printf((flags & CSVPRINT) ? "%3s;%7luKB;%*s;%-3s;%-12s;%s\n" : "%3s %7luKB %*s %-3s %-12s %s\n",
                        game->is_dvd != 0 ? "DVD" : "CD ",
                        (unsigned long)game->raw_size_in_kb,
@@ -461,7 +471,7 @@ show_hdl_toc(const dict_t *config,
                        game->startup,
                        game->name);
             }
-            printf("total %uMB, used %uMB, available %uMB\n",
+            printf((flags & TSVPRINT) ? "#total\t%u\t%u\t%u\n" : "total %uMB, used %uMB, available %uMB\n",
                    (unsigned int)(glist->total_chunks * 128),
                    (unsigned int)((glist->total_chunks -
                                    glist->free_chunks) *
@@ -1067,6 +1077,7 @@ inject(const dict_t *config,
        unsigned short dma,
        int is_dvd,
        int is_hidden,
+       int legacy_names,
        int slice_index,
        progress_t *pgs)
 {
@@ -1104,6 +1115,8 @@ inject(const dict_t *config,
             game.compat_flags = compat_flags;
             game.dma = dma;
             game.is_dvd = is_dvd;
+            if (legacy_names && !is_hidden)
+                hdl_pname_legacy(game.name, game.partition_name);
 
             if (result == RET_OK)
                 /* update compatibility database */
@@ -1387,7 +1400,8 @@ copy_hdd(const dict_t *config,
                 sprintf(in, "%s@%s", game->name, src_device_name);
                 result = inject(config, dest_device_name, game->name,
                                 in, game->startup, game->compat_flags, game->dma,
-                                game->is_dvd, is_hidden, -1, pgs);
+                                game->is_dvd, is_hidden,
+                                strncmp(game->partition_name, LEGACY_HDL_PART, 7) == 0, -1, pgs);
                 if (result == RET_OK)
                     fprintf(stdout, "  %s copied.                               \n",
                             game->name);
@@ -1523,7 +1537,7 @@ show_usage_and_exit(const char *app_path,
          "  hdl_dump toc device --dm | sudo dmsetup create --concise\n\n"
          "  device should be a block device such as /dev/hda. For manipulating disk images, use losetup and a loopback device\n",
          "hdd1:", "192.168.0.10", 0},
-        {CMD_HDL_TOC, "device [--csv]",
+        {CMD_HDL_TOC, "device [--csv|--tsv]",
          "display a list of all HDL games on the PlayStation 2 HDD",
          "Flags:\n"
          "--csv: Print data separated by semicolons, useful for scripts processing the output",
@@ -1559,7 +1573,7 @@ show_usage_and_exit(const char *app_path,
         {CMD_HDL_EXTRACT, "device name output_file",
          "extract application image from HDL partition", NULL,
          "hdd1: \"tekken tag tournament\" c:\\tekken.iso", NULL, 0},
-        {CMD_HDL_INJECT_CD, "target name source [startup] [+flags] [*dma] [@slice_index] [-hide]",
+        {CMD_HDL_INJECT_CD, "target name source [startup] [+flags] [*dma] [@slice_index] [-hide] [-hdl]",
          "create a new HDL partition from a CD",
          "You can use boot.elf, list.cio, icon.sys. Check Readme\n"
          "Supported inputs: plain ISO files, CDRWIN cuesheets, Nero images and tracks,\n"
@@ -1572,7 +1586,7 @@ show_usage_and_exit(const char *app_path,
          "-hide will cause it to be hidden in HDDOSD/Browser 2.0",
          "192.168.0.10 \"Tekken Tag Tournament\" cd0: SCES_xxx.xx *u4",
          "hdd1: \"Tekken\" c:\\tekken.iso SCES_xxx.xx +1+2 *u4", 1},
-        {CMD_HDL_INJECT_DVD, "target name source [startup] [+flags] [*dma] [@slice_index] [-hide]",
+        {CMD_HDL_INJECT_DVD, "target name source [startup] [+flags] [*dma] [@slice_index] [-hide] [-hdl]",
          "create a new HDL partition from a DVD",
          "You can use boot.elf, list.cio, icon.sys. Check Readme\n"
          "DVD-9 supports only ISO or IML.\n"
@@ -1586,7 +1600,7 @@ show_usage_and_exit(const char *app_path,
          "-hide will cause it to be hidden in HDDOSD/Browser 2.0",
          "192.168.0.10 \"Gran Turismo 3\" cd0: *u4",
          "hdd1: \"Gran Turismo 3\" c:\\gt3.iso SCES_xxx.xx +2+3 *u4", 1},
-        {CMD_HDL_INSTALL, "target source [@slice_index] [-hide]",
+        {CMD_HDL_INSTALL, "target source [@slice_index] [-hide] [-hdl]",
          "create a new HDL partition from a source, that has an entry in compatibility list",
          "You need boot.elf for installing the game. More info in Readme\n"
          "-hide will cause it to be hidden in HDDOSD/Browser 2.0",
@@ -1631,12 +1645,12 @@ show_usage_and_exit(const char *app_path,
          "hdd1:", "192.168.0.10", 0},
 #endif /* INCLUDE_DIAG_CMD defined? */
 #if defined(INCLUDE_MODIFY_CMD)
-        {CMD_MODIFY, "device game [new_name] [new_flags] [dma] [-hide/-unhide]",
+        {CMD_MODIFY, "device game [new_name] [new_flags] [dma] [-hide/-unhide/-hdl]",
          "rename a game and/or change compatibility flags",
          "Items in brackets [] are optional but at least one option must be used.\n"
          "Flags syntax is `+#[+#[+#]]' or `0xNN', for example `+1', `+2+3', `0x00', `0x03', etc.\n"
          "DMA syntax is `*u4` for UDMA4\n"
-         "-hide or -unhide will change the visibility of a game in HDDOSD/Browser 2.0",
+         "-hide or -unhide will change the visibility of a game in HDDOSD/Browser 2.0\n-hdl renames the partition to PP.HDL.<name> for the original HD Loader",
          "hdd1: DDS \"Digital Devil Saga\"",
          "192.168.0.100 \"FF X-2\" +3", 1},
 #endif /* INCLUDE_MODIFY_CMD defined? */
@@ -2022,6 +2036,8 @@ int main(int argc, char *argv[])
             if (argc > 3) {
                 if (!strcmp(argv[3], "--csv"))
                     flags |= CSVPRINT;
+                else if (!strcmp(argv[3], "--tsv"))
+                    flags |= TSVPRINT;
             }
             handle_result_and_exit(show_hdl_toc(config, argv[2], flags),
                                    argv[2], NULL);
@@ -2089,9 +2105,10 @@ int main(int argc, char *argv[])
             int is_dvd =
                 caseless_compare(command_name, CMD_HDL_INJECT_CD) ? 0 : 1;
             int is_hidden = 0; /* Games are visible by default */
+            int legacy_names = 0;
             int i;
 
-            if (!(argc >= 5 && argc <= 10))
+            if (!(argc >= 5 && argc <= 11))
                 show_usage_and_exit(argv[0], command_name);
 
             compat_flags = parse_compat_flags("0x00");
@@ -2103,6 +2120,9 @@ int main(int argc, char *argv[])
                          (argv[i][0] == '0' && argv[i][1] == 'x'))
                     /* compatibility flags */
                     compat_flags = parse_compat_flags(argv[i]);
+                else if (strcmp(argv[i], "-hdl") == 0)
+                    /* original HD Loader partition naming */
+                    legacy_names = 1;
                 else if (argv[i][0] == '-' && argv[i][1] == 'h' && argv[i][2] == 'i')
                     /* assume it's the -hide switch */
                     is_hidden = 1;
@@ -2128,7 +2148,7 @@ int main(int argc, char *argv[])
 
             handle_result_and_exit(inject(config, argv[2], argv[3], argv[4],
                                           startup, compat_flags, dma, is_dvd,
-                                          is_hidden, slice_index, get_progress()),
+                                          is_hidden, legacy_names, slice_index, get_progress()),
                                    argv[2], argv[3]);
         }
 
@@ -2274,7 +2294,10 @@ int main(int argc, char *argv[])
                     new_flags = parse_compat_flags(argv[i]);
                 else if (argv[i][0] == '-') {
                     /* switches */
-                    if (argv[i][1] == 'h' && argv[i][2] == 'i')
+                    if (strcmp(argv[i], "-hdl") == 0)
+                        /* convert partition name to original HD Loader naming (visible) */
+                        is_hidden = 2;
+                    else if (argv[i][1] == 'h' && argv[i][2] == 'i')
                         /* assume it's the -hide switch */
                         is_hidden = 1;
                     else if (argv[i][1] == 'u' && argv[i][2] == 'n')

@@ -771,6 +771,54 @@ void hdl_pname(const char *startup_name, const char *name, const char part_prefi
 
 
 /**************************************************************/
+/* Original HD Loader naming: "PP.HDL.Game name". HD Loader only lists partitions named this way;
+ * OPL and HDD-OSD accept it too. */
+void hdl_pname_legacy(const char *name, char partition_name[PS2_PART_IDMAX + 1])
+{
+    u_int32_t game_name_len = PS2_PART_IDMAX - 1 - 7; /* limit partition name length */
+    char *p;
+
+    game_name_len = strlen(name) < game_name_len ? strlen(name) : game_name_len;
+    strcpy(partition_name, LEGACY_HDL_PART);
+    memmove(partition_name + 7, name, game_name_len);
+    partition_name[7 + game_name_len] = '\0';
+    for (p = partition_name + 7; *p != '\0'; ++p)
+        if (!isalnum((unsigned char)*p) && *p != ' ' && *p != '.')
+            *p = '_'; /* escape non-alphanumeric characters with `_' */
+}
+
+
+/**************************************************************/
+/* PS2 partition names hold 31 characters, which leaves only 24 for the game name after "PP.HDL.",
+ * so different games with a long common prefix (e.g. "... Disc 1" / "... Disc 2") map to the same
+ * name. If `part_id' is taken, end it with "~2", "~3", ... instead (trimming the name as needed). */
+static void hdl_unique_partition_name(const apa_toc_t *toc, char part_id[PS2_PART_IDMAX + 1])
+{
+    char base[PS2_PART_IDMAX + 1];
+    int slice_index, n;
+    u_int32_t partition_index;
+
+    if (apa_find_partition(toc, part_id, &slice_index, &partition_index) != RET_OK)
+        return; /* free */
+    strcpy(base, part_id);
+    for (n = 2; n < 100; ++n) {
+        char suffix[4];
+        size_t max_len, len;
+        sprintf(suffix, "~%d", n);
+        max_len = PS2_PART_IDMAX - 1 - strlen(suffix);
+        len = strlen(base) < max_len ? strlen(base) : max_len;
+        while (len > 7 && base[len - 1] == ' ')
+            --len; /* avoid "Name ~2" */
+        memcpy(part_id, base, len);
+        strcpy(part_id + len, suffix);
+        if (apa_find_partition(toc, part_id, &slice_index, &partition_index) == RET_NOT_FOUND)
+            return;
+    }
+    strcpy(part_id, base); /* give up; caller reports "partition exists" */
+}
+
+
+/**************************************************************/
 int hdl_extract_ex(hio_t *hio,
                    const char *game_name,
                    const char *output_file,
@@ -1029,7 +1077,8 @@ int hdl_inject(hio_t *hio,
                     strncpy(part_prefix, VISIBLE_PART, 3);
 
                 hdl_pname(details->startup, details->name, part_prefix, details->partition_name);
-            }
+            } else if (strncmp(details->partition_name, LEGACY_HDL_PART, 7) == 0)
+                hdl_unique_partition_name(toc, details->partition_name);
 
             result = apa_allocate_space(toc, details->partition_name,
                                         size_in_mb, &slice_index,
@@ -1309,8 +1358,8 @@ int hdl_modify_game(hio_t *hio,
             /* partition will be shown normally */
             strncpy(part_prefix, VISIBLE_PART, 3);
 
-        if ((strncmp(part_prefix, part->header.id, 3) || new_name != NULL) && !toc->is_toxic) {
-            char part_id[PS2_PART_IDMAX];
+        if ((strncmp(part_prefix, part->header.id, 3) || new_name != NULL || is_hidden == 2) && !toc->is_toxic) {
+            char part_id[PS2_PART_IDMAX + 1];
             int tmp_slice_index = 0;
             u_int32_t tmp_partition_index = 0;
             char game_id[11];
@@ -1319,14 +1368,40 @@ int hdl_modify_game(hio_t *hio,
             strncpy(game_id, part->header.id + 3, 8);
             game_id[8] = '.';
             strncpy(game_id + 9, part->header.id + 11, 2);
+            if (strncmp(part->header.id, LEGACY_HDL_PART, 7) == 0) {
+                /* HD Loader names carry no game ID; take the startup file from the HDL header */
+                memcpy(game_id, hdl_hdr + 0xac, 11);
+            }
 
-            if (new_name == NULL)
-                hdl_pname(game_id, part->header.id + 15, part_prefix, part_id); /* "PP.XXXX-xxxx..GAME_NAME" */
+            const int is_legacy = strncmp(part->header.id, LEGACY_HDL_PART, 7) == 0;
+            /* the real game name lives at offset 8 of the HDL header */
+            char header_name[HDL_GAME_NAME_MAX + 1];
+            memcpy(header_name, hdl_hdr + 0x08, HDL_GAME_NAME_MAX);
+            header_name[HDL_GAME_NAME_MAX] = '\0';
+
+            if ((is_legacy && is_hidden != 1) || is_hidden == 2)
+                /* keep (or, with is_hidden == 2, convert to) HD Loader naming, otherwise the game
+                 * does not show up in HD Loader */
+            {
+                if (is_legacy && new_name == NULL)
+                    strcpy(part_id, part->header.id); /* already HD Loader named (maybe "~2"): keep it */
+                else {
+                    hdl_pname_legacy(new_name != NULL ? new_name : header_name, part_id);
+                    if (strcmp(part_id, part->header.id) != 0)
+                        hdl_unique_partition_name(toc, part_id);
+                }
+            }
+            else if (new_name == NULL)
+                hdl_pname(game_id, is_legacy ? header_name : part->header.id + 15,
+                          part_prefix, part_id); /* "PP.XXXX-xxxx..GAME_NAME" */
             else
                 hdl_pname(game_id, new_name, part_prefix, part_id);
 
-            result = apa_find_partition(toc, part_id, &tmp_slice_index,
-                                        &tmp_partition_index);
+            if (strcmp(part_id, part->header.id) == 0)
+                result = RET_NOT_FOUND; /* already named that way: rewrite in place */
+            else
+                result = apa_find_partition(toc, part_id, &tmp_slice_index,
+                                            &tmp_partition_index);
             if (result == RET_NOT_FOUND) {
                 strcpy(part->header.id, part_id);
                 set_u32(&part->header.checksum,
