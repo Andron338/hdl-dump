@@ -23,3 +23,6 @@ hdl_dump
 !.editorconfig
 !.clang-format
 *.iso
+macos/build/
+macos/.build/
+macos/build-design/

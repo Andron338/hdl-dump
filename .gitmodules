@@ -1,0 +1,3 @@
+[submodule "macos/vendor/pfsshell"]
+	path = macos/vendor/pfsshell
+	url = https://github.com/Andron338/pfsshell.git
